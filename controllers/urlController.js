@@ -30,7 +30,8 @@ exports.shortenUrl = async (req, res) => {
 
     const shortUrl = `${BASE_URL}/url/${newUrl.shortCode}`;
 
-    res.status(200).json({
+    return res.status(200).json({
+        message: "URL shortened successfully",
       shortUrl,
       originalUrl: newUrl.originalUrl
     });
