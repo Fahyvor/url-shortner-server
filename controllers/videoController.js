@@ -114,7 +114,7 @@ exports.downloadVideo = async (req, res) => {
       cookiesPath,
       "--no-playlist",
       "--extractor-args",
-      "youtube:player_client=web",
+      "youtube:player_client=tv,android",
       "-f",
       format,
       "-o",
