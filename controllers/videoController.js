@@ -1,6 +1,16 @@
 const YTDlpWrap = require("yt-dlp-wrap").default;
 
 const ytDlp = new YTDlpWrap();
+
+let ytReady = false;
+
+async function ensureYtDlp() {
+  if (!ytReady) {
+    await YTDlpWrap.downloadFromGithub();
+    ytReady = true;
+  }
+}
+
 exports.getVideoInfo = async (req, res) => {
   try {
     const { url } = req.query;
