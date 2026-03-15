@@ -65,6 +65,7 @@ exports.downloadVideo = async (req, res) => {
         url,
         "--js-runtimes",
         "node",
+        "youtube:player_client=android",
         "--no-playlist",
         "--user-agent",
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120 Safari/537.36",
