@@ -1,6 +1,9 @@
 const YTDlpWrap = require("yt-dlp-wrap").default;
+const path = require("path");
 
-const ytDlp = new YTDlpWrap();
+const ytDlpPath = path.join(process.cwd(), "yt-dlp");
+
+const ytDlp = new YTDlpWrap(ytDlpPath);
 
 let ytReady = false;
 
