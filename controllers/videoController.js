@@ -39,7 +39,7 @@ exports.getVideoInfo = async (req, res) => {
       "--dump-json",
       "--no-playlist",
       "--extractor-args",
-      "youtube:player_client=android"
+      "youtube:player_client=web"
     ]);
 
     const metadata = JSON.parse(data);
@@ -72,7 +72,7 @@ exports.downloadVideo = async (req, res) => {
   try {
     await ensureYtDlp();
 
-    const { url, format = "best" } = req.query;
+    const { url, format = "bv*+ba/b" } = req.query;
 
     if (!url) {
       return res.status(400).json({ error: "url query param is required" });
@@ -114,7 +114,7 @@ exports.downloadVideo = async (req, res) => {
       cookiesPath,
       "--no-playlist",
       "--extractor-args",
-      "youtube:player_client=android",
+      "youtube:player_client=web",
       "-f",
       format,
       "-o",
