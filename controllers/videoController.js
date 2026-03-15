@@ -36,10 +36,12 @@ exports.getVideoInfo = async (req, res) => {
       url,
       "--cookies",
       cookiesPath,
+      "--js-runtimes",
+      "node",
       "--dump-json",
       "--no-playlist",
       "--extractor-args",
-      "youtube:player_client=web"
+      "youtube:player_client=tv,android,web"
     ]);
 
     const metadata = JSON.parse(data);
