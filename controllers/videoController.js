@@ -3,17 +3,20 @@ const path = require("path");
 const fs = require("fs");
 
 // paths
-const ytDlpBinary = path.join(process.cwd(), "yt-dlp");
-const cookiesPath = path.join(process.cwd(), "cookies.txt");
+const ytDlpBinary = path.join(process.cwd(), "yt-dlp");const cookiesPath = path.join(process.cwd(), "cookies.txt");
 
 function ensureCookies() {
   if (!process.env.YOUTUBE_COOKIES) {
     throw new Error("Missing YOUTUBE_COOKIES in .env");
   }
 
-  if (!fs.existsSync(cookiesPath)) {
-    fs.writeFileSync(cookiesPath, process.env.YOUTUBE_COOKIES);
-  }
+  const content = process.env.YOUTUBE_COOKIES.replace(/\\n/g, "\n");
+
+  fs.writeFileSync(cookiesPath, content, {
+    encoding: "utf-8",
+    flag: "w"
+  });
+
 }
 
 // initialize yt-dlp
@@ -28,6 +31,8 @@ async function ensureYtDlp() {
       console.log("Downloading yt-dlp binary...");
       await YTDlpWrap.downloadFromGithub(ytDlpBinary);
     }
+    ensureCookies();
+
     ytReady = true;
   }
 }
