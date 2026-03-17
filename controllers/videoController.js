@@ -6,6 +6,16 @@ const fs = require("fs");
 const ytDlpBinary = path.join(process.cwd(), "yt-dlp");
 const cookiesPath = path.join(process.cwd(), "cookies.txt");
 
+function ensureCookies() {
+  if (!process.env.YOUTUBE_COOKIES) {
+    throw new Error("Missing YOUTUBE_COOKIES in .env");
+  }
+
+  if (!fs.existsSync(cookiesPath)) {
+    fs.writeFileSync(cookiesPath, process.env.YOUTUBE_COOKIES);
+  }
+}
+
 // initialize yt-dlp
 const ytDlp = new YTDlpWrap(ytDlpBinary);
 
