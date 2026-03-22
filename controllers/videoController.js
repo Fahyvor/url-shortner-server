@@ -3,11 +3,18 @@ const path = require("path");
 const fs = require("fs");
 
 // paths
-const ytDlpBinary = path.join(process.cwd(), "yt-dlp");const cookiesPath = path.join(process.cwd(), "cookies.txt");
+const ytDlpBinary = path.join(process.cwd(), "yt-dlp");
+const cookiesPath = path.join(process.cwd(), "cookies.txt");
+
+let ytReady = false;
+
+// initialize yt-dlp
+const ytDlp = new YTDlpWrap(ytDlpBinary);
 
 function ensureCookies() {
   if (!process.env.YOUTUBE_COOKIES) {
-    throw new Error("Missing YOUTUBE_COOKIES in .env");
+    console.log("⚠️ No cookies provided, continuing without cookies...");
+    return false;
   }
 
   const content = process.env.YOUTUBE_COOKIES.replace(/\\n/g, "\n");
@@ -17,26 +24,26 @@ function ensureCookies() {
     flag: "w"
   });
 
+  return true;
 }
 
-// initialize yt-dlp
-const ytDlp = new YTDlpWrap(ytDlpBinary);
-
-let ytReady = false;
-
-// ensure yt-dlp binary exists
 async function ensureYtDlp() {
   if (!ytReady) {
     if (!fs.existsSync(ytDlpBinary)) {
-      console.log("Downloading yt-dlp binary...");
+      console.log("⬇️ Downloading yt-dlp binary...");
       await YTDlpWrap.downloadFromGithub(ytDlpBinary);
     }
-    ensureCookies();
+
+    // 🔥 VERY IMPORTANT (fixes most failures)
+    fs.chmodSync(ytDlpBinary, 0o755);
 
     ytReady = true;
   }
 }
 
+/**
+ * GET VIDEO INFO
+ */
 exports.getVideoInfo = async (req, res) => {
   try {
     await ensureYtDlp();
@@ -47,18 +54,19 @@ exports.getVideoInfo = async (req, res) => {
       return res.status(400).json({ error: "url query param is required" });
     }
 
-    const data = await ytDlp.execPromise([
-      url,
-      "--cookies",
-      cookiesPath,
-      "--js-runtimes",
-      "node",
-      "--dump-json",
-      "--no-playlist",
-      "--extractor-args",
-      "youtube:player_client=tv,android,web"
-    ]);
+    const hasCookies = ensureCookies();
 
+    const args = [
+      url,
+      "--dump-json",
+      "--no-playlist"
+    ];
+
+    if (hasCookies) {
+      args.push("--cookies", cookiesPath);
+    }
+
+    const data = await ytDlp.execPromise(args);
     const metadata = JSON.parse(data);
 
     return res.status(200).json({
@@ -77,10 +85,11 @@ exports.getVideoInfo = async (req, res) => {
     });
 
   } catch (error) {
-    console.error(error);
+    console.error("INFO ERROR:", error?.stderr || error);
 
     res.status(500).json({
-      error: "Could not fetch video info. Check the URL or platform support."
+      error: "Could not fetch video info",
+      details: error?.stderr || error.message
     });
   }
 };
@@ -89,23 +98,28 @@ exports.downloadVideo = async (req, res) => {
   try {
     await ensureYtDlp();
 
-    const { url, format = "bv*+ba/b" } = req.query;
+    let { url, format } = req.query;
 
     if (!url) {
       return res.status(400).json({ error: "url query param is required" });
     }
 
-    // fetch metadata first
-    const data = await ytDlp.execPromise([
-      url,
-      "--cookies",
-      cookiesPath,
-      "--dump-json",
-      "--no-playlist",
-      "--extractor-args",
-      "youtube:player_client=android"
-    ]);
+    format = format || "best";
 
+    const hasCookies = ensureCookies();
+
+    // get metadata first
+    const metaArgs = [
+      url,
+      "--dump-json",
+      "--no-playlist"
+    ];
+
+    if (hasCookies) {
+      metaArgs.push("--cookies", cookiesPath);
+    }
+
+    const data = await ytDlp.execPromise(metaArgs);
     const metadata = JSON.parse(data);
 
     const safeTitle = metadata.title
@@ -125,32 +139,42 @@ exports.downloadVideo = async (req, res) => {
       format === "bestaudio" ? "audio/mpeg" : "video/mp4"
     );
 
-    ytDlp.execStream([
+    const args = [
       url,
-      "--cookies",
-      cookiesPath,
-      "--no-playlist",
-      "--extractor-args",
-      "youtube:player_client=tv,android",
       "-f",
       format,
       "-o",
-      "-"
-    ])
-    .pipe(res)
-    .on("error", (err) => {
-      console.error("Stream error:", err);
+      "-",
+      "--no-playlist"
+    ];
 
-      if (!res.headersSent) {
-        res.status(500).json({ error: "Streaming failed" });
-      }
-    });
+    if (hasCookies) {
+      args.push("--cookies", cookiesPath);
+    }
+
+    console.log("⬇️ Downloading with format:", format);
+
+    const stream = ytDlp.execStream(args);
+
+    stream
+      .on("error", (err) => {
+        console.error("STREAM ERROR:", err);
+
+        if (!res.headersSent) {
+          res.status(500).json({
+            error: "Streaming failed",
+            details: err.message
+          });
+        }
+      })
+      .pipe(res);
 
   } catch (error) {
-    console.error(error);
+    console.error("DOWNLOAD ERROR:", error?.stderr || error);
 
     res.status(500).json({
-      error: "Download failed. Check the URL or format."
+      error: "Download failed",
+      details: error?.stderr || error.message
     });
   }
 };
