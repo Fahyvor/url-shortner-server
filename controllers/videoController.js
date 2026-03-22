@@ -89,10 +89,26 @@ exports.downloadVideo = async (req, res) => {
   try {
     await ensureYtDlp();
 
-    const { url, format = "bv*+ba/b" } = req.query;
-
+    const { url, format } = req.query;
+    
     if (!url) {
       return res.status(400).json({ error: "url query param is required" });
+    }
+
+    format = format || "best";
+
+    if (format.includes("+")) {
+      return res.status(400).json({
+        error: "This format requires merging and cannot be streamed. Use 'best' instead."
+      });
+    }
+
+    if (/^\d+$/.test(format)) {
+      format = `${format}+bestaudio`;
+
+      return res.status(400).json({
+        error: "Video-only format selected. Use a combined format like 'best'."
+      });
     }
 
     // fetch metadata first
