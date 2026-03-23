@@ -1,6 +1,7 @@
 const YTDlpWrap = require("yt-dlp-wrap").default;
 const path = require("path");
 const fs = require("fs");
+const os = require("os");
 
 // paths
 const ytDlpBinary = path.join(process.cwd(), "yt-dlp");const cookiesPath = path.join(process.cwd(), "cookies.txt");
@@ -47,19 +48,40 @@ exports.getVideoInfo = async (req, res) => {
       return res.status(400).json({ error: "url query param is required" });
     }
 
-    const data = await ytDlp.execPromise([
+    const args = [
       url,
-      "--cookies",
-      cookiesPath,
-      "--js-runtimes",
-      "node",
       "--dump-json",
-      "--no-playlist",
-      "--extractor-args",
-      "youtube:player_client=tv,android,web"
-    ]);
+      "--no-playlist"
+    ];
 
+    if (process.env.YOUTUBE_COOKIES) {
+      args.push("--cookies", cookiesPath);
+    }
+
+    const data = await ytDlp.execPromise(args);
     const metadata = JSON.parse(data);
+
+    // 🔥 IMPORTANT: deduplicate + clean formats
+    const formats = metadata.formats
+      ?.filter(f => f.vcodec !== "none") // only video formats
+      ?.map((f) => ({
+        formatId: f.format_id,
+        ext: f.ext,
+        resolution: f.height ? `${f.height}p` : null,
+        height: f.height,
+        fps: f.fps,
+        filesize: f.filesize,
+        hasAudio: f.acodec !== "none",
+        note: f.format_note
+      }))
+      // 🔥 remove duplicates (same resolution)
+      ?.reduce((acc, curr) => {
+        const exists = acc.find(f => f.height === curr.height);
+        if (!exists) acc.push(curr);
+        return acc;
+      }, [])
+      // 🔥 sort quality properly
+      ?.sort((a, b) => (b.height || 0) - (a.height || 0));
 
     return res.status(200).json({
       title: metadata.title,
@@ -67,20 +89,15 @@ exports.getVideoInfo = async (req, res) => {
       duration: metadata.duration,
       uploader: metadata.uploader,
       platform: metadata.extractor_key,
-      formats: metadata.formats?.map((f) => ({
-        formatId: f.format_id,
-        ext: f.ext,
-        resolution: f.resolution || "audio only",
-        filesize: f.filesize,
-        note: f.format_note
-      }))
+      formats
     });
 
   } catch (error) {
-    console.error(error);
+    console.error("❌ INFO ERROR:", error?.stderr || error);
 
     res.status(500).json({
-      error: "Could not fetch video info. Check the URL or platform support."
+      error: "Could not fetch video info",
+      details: error?.stderr || error.message
     });
   }
 };
@@ -89,84 +106,84 @@ exports.downloadVideo = async (req, res) => {
   try {
     await ensureYtDlp();
 
-    const { url, format } = req.query;
-    
+    let { url, format } = req.query;
+
     if (!url) {
       return res.status(400).json({ error: "url query param is required" });
     }
 
     format = format || "best";
 
-    if (format.includes("+")) {
-      return res.status(400).json({
-        error: "This format requires merging and cannot be streamed. Use 'best' instead."
-      });
+    // return console.log("Format", format);
+
+    // detect format type
+    const isNumericFormat = /^\d+$/.test(format);
+
+    let ytFormat;
+
+    if (format === "best") {
+      ytFormat = "best";
+    } else if (format === "bestaudio") {
+      ytFormat = "bestaudio";
+    } else if (isNumericFormat) {
+      ytFormat = `${format}+bestaudio/best`;
+    } else {
+      ytFormat = "best";
     }
 
-    if (/^\d+$/.test(format)) {
-      format = `${format}+bestaudio`;
+    const ext = format === "bestaudio" ? "mp3" : "mp4";
+    const outputPath = path.join(os.tmpdir(), `video_${Date.now()}.${ext}`);
 
-      return res.status(400).json({
-        error: "Video-only format selected. Use a combined format like 'best'."
-      });
+    // fetch metadata
+    const metaArgs = [url, "--dump-json", "--no-playlist"];
+    if (process.env.YOUTUBE_COOKIES) {
+      metaArgs.push("--cookies", cookiesPath);
     }
 
-    // fetch metadata first
-    const data = await ytDlp.execPromise([
-      url,
-      "--cookies",
-      cookiesPath,
-      "--dump-json",
-      "--no-playlist",
-      "--extractor-args",
-      "youtube:player_client=android"
-    ]);
-
+    const data = await ytDlp.execPromise(metaArgs);
     const metadata = JSON.parse(data);
 
     const safeTitle = metadata.title
       .replace(/[^a-zA-Z0-9_\-]/g, "_")
       .slice(0, 80);
 
-    const ext = format === "bestaudio" ? "mp3" : "mp4";
     const filename = `${safeTitle}.${ext}`;
+
+    // yt-dlp args to download
+    const args = [url, "-f", ytFormat, "-o", outputPath, "--no-playlist"];
+    if (process.env.YOUTUBE_COOKIES) {
+      args.push("--cookies", cookiesPath);
+    }
+
+    if (format === "bestaudio") {
+      args.push("--extract-audio", "--audio-format", "mp3");
+    }
+
+    console.log("Downloading with format:", ytFormat);
+
+    await ytDlp.execPromise(args);
 
     res.setHeader(
       "Content-Disposition",
       `attachment; filename="${filename}"`
     );
-
     res.setHeader(
       "Content-Type",
       format === "bestaudio" ? "audio/mpeg" : "video/mp4"
     );
 
-    ytDlp.execStream([
-      url,
-      "--cookies",
-      cookiesPath,
-      "--no-playlist",
-      "--extractor-args",
-      "youtube:player_client=tv,android",
-      "-f",
-      format,
-      "-o",
-      "-"
-    ])
-    .pipe(res)
-    .on("error", (err) => {
-      console.error("Stream error:", err);
-
-      if (!res.headersSent) {
-        res.status(500).json({ error: "Streaming failed" });
+    res.download(outputPath, filename, (err) => {
+      if (err) {
+        console.error("Error sending file:", err);
       }
+      fs.unlink(outputPath, () => {});
     });
 
   } catch (error) {
-    console.error(error);
-
+    console.error("Download error:", error?.stderr || error);
     res.status(500).json({
-      error: "Download failed. Check the URL or format."
+      error: "Download failed",
+      details: error?.stderr || error.message
     });
   }
 };
