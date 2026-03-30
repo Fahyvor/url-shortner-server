@@ -32,6 +32,16 @@ async function ensureYtDlp() {
       console.log("Downloading yt-dlp binary...");
       await YTDlpWrap.downloadFromGithub(ytDlpBinary);
     }
+
+    //ALWAYS update (VERY IMPORTANT)
+    try {
+      console.log("Updating yt-dlp...");
+      const ytDlp = new YTDlpWrap(ytDlpBinary);
+      await ytDlp.execPromise(["-U"]);
+    } catch (e) {
+      console.log("yt-dlp update failed, continuing...");
+    }
+
     ensureCookies();
 
     ytReady = true;
@@ -93,7 +103,7 @@ exports.getVideoInfo = async (req, res) => {
     });
 
   } catch (error) {
-    console.error("❌ INFO ERROR:", error?.stderr || error);
+    console.error("INFO ERROR:", error?.stderr || error);
 
     res.status(500).json({
       error: "Could not fetch video info",
@@ -161,7 +171,14 @@ exports.downloadVideo = async (req, res) => {
 
     console.log("Downloading with format:", ytFormat);
 
-    await ytDlp.execPromise(args);
+    await ytDlp.execPromise([
+      url,
+      "-f",
+      "best",
+      "-o",
+      outputPath,
+      "--no-playlist"
+    ]);;
 
     res.setHeader(
       "Content-Disposition",
