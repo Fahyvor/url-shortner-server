@@ -4,12 +4,17 @@ const fs = require("fs");
 const os = require("os");
 
 // paths
-const ytDlpBinary = path.join(process.cwd(), "yt-dlp");const cookiesPath = path.join(process.cwd(), "cookies.txt");
+const ytDlpBinary = path.join(process.cwd(), "yt-dlp");
+const cookiesPath = path.join(process.cwd(), "cookies.txt");
 
+// init
+const ytDlp = new YTDlpWrap(ytDlpBinary);
+
+let ytReady = false;
+
+// Ensure cookies exist
 function ensureCookies() {
-  if (!process.env.YOUTUBE_COOKIES) {
-    throw new Error("Missing YOUTUBE_COOKIES in .env");
-  }
+  if (!process.env.YOUTUBE_COOKIES) return;
 
   const content = process.env.YOUTUBE_COOKIES.replace(/\\n/g, "\n");
 
@@ -17,15 +22,9 @@ function ensureCookies() {
     encoding: "utf-8",
     flag: "w"
   });
-
 }
 
-// initialize yt-dlp
-const ytDlp = new YTDlpWrap(ytDlpBinary);
-
-let ytReady = false;
-
-// ensure yt-dlp binary exists
+// Ensure yt-dlp is ready
 async function ensureYtDlp() {
   if (!ytReady) {
     if (!fs.existsSync(ytDlpBinary)) {
@@ -33,21 +32,19 @@ async function ensureYtDlp() {
       await YTDlpWrap.downloadFromGithub(ytDlpBinary);
     }
 
-    //ALWAYS update (VERY IMPORTANT)
     try {
       console.log("Updating yt-dlp...");
-      const ytDlp = new YTDlpWrap(ytDlpBinary);
       await ytDlp.execPromise(["-U"]);
     } catch (e) {
       console.log("yt-dlp update failed, continuing...");
     }
 
     ensureCookies();
-
     ytReady = true;
   }
 }
 
+// Get video info
 exports.getVideoInfo = async (req, res) => {
   try {
     await ensureYtDlp();
@@ -61,7 +58,9 @@ exports.getVideoInfo = async (req, res) => {
     const args = [
       url,
       "--dump-json",
-      "--no-playlist"
+      "--no-playlist",
+      "--js-runtime",
+      "node"
     ];
 
     if (process.env.YOUTUBE_COOKIES) {
@@ -71,9 +70,13 @@ exports.getVideoInfo = async (req, res) => {
     const data = await ytDlp.execPromise(args);
     const metadata = JSON.parse(data);
 
-    // 🔥 IMPORTANT: deduplicate + clean formats
+    console.log(
+      "Available formats:",
+      metadata.formats?.map(f => f.format_id)
+    );
+
     const formats = metadata.formats
-      ?.filter(f => f.vcodec !== "none") // only video formats
+      ?.filter(f => f.vcodec !== "none")
       ?.map((f) => ({
         formatId: f.format_id,
         ext: f.ext,
@@ -84,13 +87,11 @@ exports.getVideoInfo = async (req, res) => {
         hasAudio: f.acodec !== "none",
         note: f.format_note
       }))
-      // 🔥 remove duplicates (same resolution)
       ?.reduce((acc, curr) => {
         const exists = acc.find(f => f.height === curr.height);
         if (!exists) acc.push(curr);
         return acc;
       }, [])
-      // 🔥 sort quality properly
       ?.sort((a, b) => (b.height || 0) - (a.height || 0));
 
     return res.status(200).json({
@@ -112,6 +113,7 @@ exports.getVideoInfo = async (req, res) => {
   }
 };
 
+// Download video
 exports.downloadVideo = async (req, res) => {
   try {
     await ensureYtDlp();
@@ -124,28 +126,31 @@ exports.downloadVideo = async (req, res) => {
 
     format = format || "best";
 
-    // return console.log("Format", format);
-
-    // detect format type
     const isNumericFormat = /^\d+$/.test(format);
 
     let ytFormat;
 
     if (format === "best") {
-      ytFormat = "best";
+      ytFormat = "bestvideo+bestaudio/best";
     } else if (format === "bestaudio") {
       ytFormat = "bestaudio";
     } else if (isNumericFormat) {
-      ytFormat = `${format}+bestaudio/best`;
+      ytFormat = `${format}+bestaudio/bestvideo+bestaudio/best`;
     } else {
-      ytFormat = "best";
+      ytFormat = "bestvideo+bestaudio/best";
     }
 
     const ext = format === "bestaudio" ? "mp3" : "mp4";
     const outputPath = path.join(os.tmpdir(), `video_${Date.now()}.${ext}`);
 
-    // fetch metadata
-    const metaArgs = [url, "--dump-json", "--no-playlist"];
+    const metaArgs = [
+      url,
+      "--dump-json",
+      "--no-playlist",
+      "--js-runtime",
+      "node"
+    ];
+
     if (process.env.YOUTUBE_COOKIES) {
       metaArgs.push("--cookies", cookiesPath);
     }
@@ -159,8 +164,17 @@ exports.downloadVideo = async (req, res) => {
 
     const filename = `${safeTitle}.${ext}`;
 
-    // yt-dlp args to download
-    const args = [url, "-f", ytFormat, "-o", outputPath, "--no-playlist"];
+    const args = [
+      url,
+      "-f",
+      ytFormat,
+      "-o",
+      outputPath,
+      "--no-playlist",
+      "--js-runtime",
+      "node"
+    ];
+
     if (process.env.YOUTUBE_COOKIES) {
       args.push("--cookies", cookiesPath);
     }
@@ -171,14 +185,7 @@ exports.downloadVideo = async (req, res) => {
 
     console.log("Downloading with format:", ytFormat);
 
-    await ytDlp.execPromise([
-      url,
-      "-f",
-      "best",
-      "-o",
-      outputPath,
-      "--no-playlist"
-    ]);;
+    await ytDlp.execPromise(args);
 
     res.setHeader(
       "Content-Disposition",
@@ -198,6 +205,7 @@ exports.downloadVideo = async (req, res) => {
 
   } catch (error) {
     console.error("Download error:", error?.stderr || error);
+
     res.status(500).json({
       error: "Download failed",
       details: error?.stderr || error.message
