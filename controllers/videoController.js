@@ -113,7 +113,6 @@ exports.getVideoInfo = async (req, res) => {
   }
 };
 
-// Download video
 exports.downloadVideo = async (req, res) => {
   try {
     await ensureYtDlp();
@@ -135,30 +134,32 @@ exports.downloadVideo = async (req, res) => {
     } else if (format === "bestaudio") {
       ytFormat = "bestaudio";
     } else if (isNumericFormat) {
-      ytFormat = `${format}+bestaudio/bestvideo+bestaudio/best`;
+      ytFormat = `${format}+bestaudio/best`;
     } else {
       ytFormat = "bestvideo+bestaudio/best";
     }
 
     const ext = format === "bestaudio" ? "mp3" : "mp4";
-    const outputPath = path.join(os.tmpdir(), `video_${Date.now()}.${ext}`);
+
+    const outputPath = path.join(
+      os.tmpdir(),
+      `video_${Date.now()}.${ext}`
+    );
 
     const metaArgs = [
       url,
       "--dump-json",
-      "--no-playlist",
-      "--js-runtime",
-      "node"
+      "--no-playlist"
     ];
 
-    if (process.env.YOUTUBE_COOKIES) {
+    if (process.env.YOUTUBE_COOKIES && fs.existsSync(cookiesPath)) {
       metaArgs.push("--cookies", cookiesPath);
     }
 
-    const data = await ytDlp.execPromise(metaArgs);
-    const metadata = JSON.parse(data);
+    const metaRaw = await ytDlp.execPromise(metaArgs);
+    const metadata = JSON.parse(metaRaw);
 
-    const safeTitle = metadata.title
+    const safeTitle = (metadata.title || "video")
       .replace(/[^a-zA-Z0-9_\-]/g, "_")
       .slice(0, 80);
 
@@ -170,12 +171,10 @@ exports.downloadVideo = async (req, res) => {
       ytFormat,
       "-o",
       outputPath,
-      "--no-playlist",
-      "--js-runtime",
-      "node"
+      "--no-playlist"
     ];
 
-    if (process.env.YOUTUBE_COOKIES) {
+    if (process.env.YOUTUBE_COOKIES && fs.existsSync(cookiesPath)) {
       args.push("--cookies", cookiesPath);
     }
 
@@ -185,12 +184,19 @@ exports.downloadVideo = async (req, res) => {
 
     console.log("Downloading with format:", ytFormat);
 
-    await ytDlp.execPromise(args);
+    const result = await ytDlp.execPromise(args);
+
+    console.log("yt-dlp output:", result);
+
+    if (!fs.existsSync(outputPath)) {
+      throw new Error("Download failed: file was not created");
+    }
 
     res.setHeader(
       "Content-Disposition",
       `attachment; filename="${filename}"`
     );
+
     res.setHeader(
       "Content-Type",
       format === "bestaudio" ? "audio/mpeg" : "video/mp4"
@@ -200,15 +206,25 @@ exports.downloadVideo = async (req, res) => {
       if (err) {
         console.error("Error sending file:", err);
       }
-      fs.unlink(outputPath, () => {});
+
+      // Cleanup
+      fs.unlink(outputPath, (unlinkErr) => {
+        if (unlinkErr) {
+          console.error("Error deleting temp file:", unlinkErr);
+        }
+      });
     });
 
   } catch (error) {
-    console.error("Download error:", error?.stderr || error);
+    console.error("========= DOWNLOAD ERROR =========");
+    console.error("STDERR:", error?.stderr);
+    console.error("STDOUT:", error?.stdout);
+    console.error("MESSAGE:", error?.message);
+    console.error("FULL:", error);
 
     res.status(500).json({
       error: "Download failed",
-      details: error?.stderr || error.message
+      details: error?.stderr || error?.message
     });
   }
 };
