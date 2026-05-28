@@ -111,6 +111,27 @@ async function smartExec(url, args, platform) {
 }
 
 // ----------------------
+// SAFE JSON PARSE
+// ----------------------
+function safeJSONParse(data) {
+  if (!data || typeof data !== 'string') {
+    throw new Error("Invalid data for JSON parsing");
+  }
+
+  // Extract valid JSON from potentially mixed output (remove yt-dlp warnings/errors)
+  const jsonMatch = data.match(/^\s*\{[\s\S]*\}\s*$/);
+  if (!jsonMatch) {
+    throw new Error(`Invalid JSON response: ${data.substring(0, 100)}`);
+  }
+
+  try {
+    return JSON.parse(jsonMatch[0]);
+  } catch (e) {
+    throw new Error(`Failed to parse JSON: ${e.message}`);
+  }
+}
+
+// ----------------------
 // GET INFO
 // ----------------------
 exports.getVideoInfo = async (req, res) => {
@@ -131,7 +152,7 @@ exports.getVideoInfo = async (req, res) => {
     ];
 
     const data = await smartExec(url, args, platform);
-    const metadata = JSON.parse(data);
+    const metadata = safeJSONParse(data);
 
     const formats = metadata.formats
       ?.filter(f => f.vcodec !== "none")
@@ -200,7 +221,7 @@ exports.downloadVideo = async (req, res) => {
       platform
     );
 
-    const metadata = JSON.parse(metaRaw);
+    const metadata = safeJSONParse(metaRaw);
 
     const safeTitle = (metadata.title || "video")
       .replace(/[^a-zA-Z0-9_\-]/g, "_")
