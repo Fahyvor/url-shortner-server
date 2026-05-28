@@ -8,12 +8,13 @@ const os = require("os");
 const ytDlpBinary = path.join(process.cwd(), "yt-dlp");
 const cookiesPath = path.join(process.cwd(), "cookies.txt");
 
-// init
 const ytDlp = new YTDlpWrap(ytDlpBinary);
 
 let ytReady = false;
 
-// Ensure cookies exist
+// ----------------------
+// INIT
+// ----------------------
 function ensureCookies() {
   if (!process.env.YOUTUBE_COOKIES) return;
 
@@ -21,124 +22,169 @@ function ensureCookies() {
 
   fs.writeFileSync(cookiesPath, content, {
     encoding: "utf-8",
-    flag: "w"
+    flag: "w",
   });
 }
 
-// Ensure yt-dlp is ready
 async function ensureYtDlp() {
   if (!ytReady) {
     if (!fs.existsSync(ytDlpBinary)) {
-      console.log("Downloading yt-dlp binary...");
       await YTDlpWrap.downloadFromGithub(ytDlpBinary);
     }
 
     try {
-      console.log("Updating yt-dlp...");
       await ytDlp.execPromise(["-U"]);
-    } catch (e) {
-      console.log("yt-dlp update failed, continuing...");
-    }
+    } catch {}
 
     ensureCookies();
     ytReady = true;
   }
 }
 
-// Get video info
+// ----------------------
+// PLATFORM DETECTION
+// ----------------------
+function detectPlatform(url) {
+  if (!url) return "unknown";
+
+  if (url.includes("youtube.com") || url.includes("youtu.be")) return "youtube";
+  if (url.includes("x.com") || url.includes("twitter.com")) return "twitter";
+  if (url.includes("tiktok.com")) return "tiktok";
+  if (url.includes("instagram.com")) return "instagram";
+
+  return "unknown";
+}
+
+// ----------------------
+// COMMON FLAGS
+// ----------------------
+function baseArgs() {
+  return [
+    "--no-playlist",
+    "--user-agent",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
+    "--add-header",
+    "Accept-Language: en-US,en;q=0.9",
+    "--socket-timeout",
+    "30",
+    "--merge-output-format",
+    "mp4",
+    "--max-filesize",
+    "50M",
+  ];
+}
+
+// ----------------------
+// SMART EXEC
+// ----------------------
+async function smartExec(url, args, platform) {
+  try {
+    return await ytDlp.execPromise([...args]);
+  } catch (err) {
+    console.warn("Primary attempt failed");
+
+    // 🔥 YouTube fallback with cookies
+    if (
+      platform === "youtube" &&
+      process.env.YOUTUBE_COOKIES &&
+      fs.existsSync(cookiesPath)
+    ) {
+      console.log("Retrying with cookies...");
+
+      return await ytDlp.execPromise([
+        ...args,
+        "--cookies",
+        cookiesPath,
+      ]);
+    }
+
+    // 🔥 fallback lightweight format
+    console.log("Retrying with lighter format...");
+
+    return await ytDlp.execPromise([
+      url,
+      "-f",
+      "worst",
+      ...baseArgs(),
+    ]);
+  }
+}
+
+// ----------------------
+// GET INFO
+// ----------------------
 exports.getVideoInfo = async (req, res) => {
   try {
     await ensureYtDlp();
 
     const { url } = req.query;
-
     if (!url) {
-      return res.status(400).json({ error: "url query param is required" });
+      return res.status(400).json({ error: "url is required" });
     }
+
+    const platform = detectPlatform(url);
 
     const args = [
       url,
       "--dump-json",
-      "--no-playlist",
-      "--js-runtime",
-      "node"
+      ...baseArgs(),
     ];
 
-    if (process.env.YOUTUBE_COOKIES) {
-      args.push("--cookies", cookiesPath);
-    }
-
-    const data = await ytDlp.execPromise(args);
+    const data = await smartExec(url, args, platform);
     const metadata = JSON.parse(data);
-
-    console.log(
-      "Available formats:",
-      metadata.formats?.map(f => f.format_id)
-    );
 
     const formats = metadata.formats
       ?.filter(f => f.vcodec !== "none")
-      ?.map((f) => ({
+      ?.map(f => ({
         formatId: f.format_id,
         ext: f.ext,
         resolution: f.height ? `${f.height}p` : null,
         height: f.height,
-        fps: f.fps,
         filesize: f.filesize,
-        hasAudio: f.acodec !== "none",
-        note: f.format_note
       }))
-      ?.reduce((acc, curr) => {
-        const exists = acc.find(f => f.height === curr.height);
-        if (!exists) acc.push(curr);
-        return acc;
-      }, [])
       ?.sort((a, b) => (b.height || 0) - (a.height || 0));
 
-    return res.status(200).json({
+    res.json({
       title: metadata.title,
       thumbnail: metadata.thumbnail,
       duration: metadata.duration,
       uploader: metadata.uploader,
-      platform: metadata.extractor_key,
-      formats
+      platform,
+      formats,
     });
 
   } catch (error) {
     console.error("INFO ERROR:", error?.stderr || error);
 
     res.status(500).json({
-      error: "Could not fetch video info",
-      details: error?.stderr || error.message
+      error: "Failed to fetch info",
+      details: error?.stderr || error.message,
     });
   }
 };
 
+// ----------------------
+// DOWNLOAD
+// ----------------------
 exports.downloadVideo = async (req, res) => {
   try {
     await ensureYtDlp();
 
     let { url, format } = req.query;
-
     if (!url) {
-      return res.status(400).json({ error: "url query param is required" });
+      return res.status(400).json({ error: "url is required" });
     }
+
+    const platform = detectPlatform(url);
 
     format = format || "best";
 
-    const isNumericFormat = /^\d+$/.test(format);
-
-    let ytFormat;
-
-    if (format === "best") {
-      ytFormat = "bestvideo+bestaudio/best";
-    } else if (format === "bestaudio") {
-      ytFormat = "bestaudio";
-    } else if (isNumericFormat) {
-      ytFormat = `${format}+bestaudio/best`;
-    } else {
-      ytFormat = "bestvideo+bestaudio/best";
-    }
+    let ytFormat =
+      format === "bestaudio"
+        ? "bestaudio"
+        : /^\d+$/.test(format)
+        ? `${format}+bestaudio/best`
+        : "bestvideo+bestaudio/best";
 
     const ext = format === "bestaudio" ? "mp3" : "mp4";
 
@@ -147,17 +193,13 @@ exports.downloadVideo = async (req, res) => {
       `video_${Date.now()}.${ext}`
     );
 
-    const metaArgs = [
+    // ---- metadata ----
+    const metaRaw = await smartExec(
       url,
-      "--dump-json",
-      "--no-playlist"
-    ];
+      [url, "--dump-json", ...baseArgs()],
+      platform
+    );
 
-    if (process.env.YOUTUBE_COOKIES && fs.existsSync(cookiesPath)) {
-      metaArgs.push("--cookies", cookiesPath);
-    }
-
-    const metaRaw = await ytDlp.execPromise(metaArgs);
     const metadata = JSON.parse(metaRaw);
 
     const safeTitle = (metadata.title || "video")
@@ -166,31 +208,26 @@ exports.downloadVideo = async (req, res) => {
 
     const filename = `${safeTitle}.${ext}`;
 
+    // ---- download ----
     const args = [
       url,
       "-f",
       ytFormat,
       "-o",
       outputPath,
-      "--no-playlist"
+      ...baseArgs(),
     ];
-
-    if (process.env.YOUTUBE_COOKIES && fs.existsSync(cookiesPath)) {
-      args.push("--cookies", cookiesPath);
-    }
 
     if (format === "bestaudio") {
       args.push("--extract-audio", "--audio-format", "mp3");
     }
 
-    console.log("Downloading with format:", ytFormat);
+    console.log(`Downloading (${platform}):`, ytFormat);
 
-    const result = await ytDlp.execPromise(args);
-
-    console.log("yt-dlp output:", result);
+    await smartExec(url, args, platform);
 
     if (!fs.existsSync(outputPath)) {
-      throw new Error("Download failed: file was not created");
+      throw new Error("File not created");
     }
 
     res.setHeader(
@@ -203,29 +240,16 @@ exports.downloadVideo = async (req, res) => {
       format === "bestaudio" ? "audio/mpeg" : "video/mp4"
     );
 
-    res.download(outputPath, filename, (err) => {
-      if (err) {
-        console.error("Error sending file:", err);
-      }
-
-      // Cleanup
-      fs.unlink(outputPath, (unlinkErr) => {
-        if (unlinkErr) {
-          console.error("Error deleting temp file:", unlinkErr);
-        }
-      });
+    res.download(outputPath, filename, () => {
+      fs.unlink(outputPath, () => {});
     });
 
   } catch (error) {
-    console.error("========= DOWNLOAD ERROR =========");
-    console.error("STDERR:", error?.stderr);
-    console.error("STDOUT:", error?.stdout);
-    console.error("MESSAGE:", error?.message);
-    console.error("FULL:", error);
+    console.error("DOWNLOAD ERROR:", error?.stderr || error);
 
     res.status(500).json({
       error: "Download failed",
-      details: error?.stderr || error?.message
+      details: error?.stderr || error.message,
     });
   }
 };
