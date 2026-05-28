@@ -1,3 +1,4 @@
+
 const YTDlpWrap = require("yt-dlp-wrap").default;
 const path = require("path");
 const fs = require("fs");
@@ -5,17 +6,30 @@ const os = require("os");
 
 // paths
 const ytDlpBinary = path.join(process.cwd(), "yt-dlp");
+const cookiesPath = path.join(process.cwd(), "cookies.txt");
+
+// init
 const ytDlp = new YTDlpWrap(ytDlpBinary);
 
 let ytReady = false;
 
-// ----------------------
-// Ensure yt-dlp
-// ----------------------
+// Ensure cookies exist
+function ensureCookies() {
+  if (!process.env.YOUTUBE_COOKIES) return;
+
+  const content = process.env.YOUTUBE_COOKIES.replace(/\\n/g, "\n");
+
+  fs.writeFileSync(cookiesPath, content, {
+    encoding: "utf-8",
+    flag: "w"
+  });
+}
+
+// Ensure yt-dlp is ready
 async function ensureYtDlp() {
   if (!ytReady) {
     if (!fs.existsSync(ytDlpBinary)) {
-      console.log("Downloading yt-dlp...");
+      console.log("Downloading yt-dlp binary...");
       await YTDlpWrap.downloadFromGithub(ytDlpBinary);
     }
 
@@ -23,52 +37,15 @@ async function ensureYtDlp() {
       console.log("Updating yt-dlp...");
       await ytDlp.execPromise(["-U"]);
     } catch (e) {
-      console.log("Update failed, continuing...");
+      console.log("yt-dlp update failed, continuing...");
     }
 
+    ensureCookies();
     ytReady = true;
   }
 }
 
-// ----------------------
-// COMMON FLAGS (SAFE FOR PRODUCTION)
-// ----------------------
-function getCommonArgs() {
-  return [
-    "--no-playlist",
-    "--user-agent",
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
-    "--add-header",
-    "Accept-Language: en-US,en;q=0.9",
-    "--sleep-interval",
-    "2",
-    "--max-sleep-interval",
-    "5",
-  ];
-}
-
-// ----------------------
-// SAFE EXEC WITH RETRY (NO COOKIES LOGIC)
-// ----------------------
-async function safeExec(args) {
-  try {
-    return await ytDlp.execPromise(args);
-  } catch (err) {
-    console.warn("yt-dlp failed, retrying without extra flags...");
-
-    const cleanedArgs = args.filter(
-      (arg) =>
-        arg !== "--cookies" &&
-        arg !== "--cookies-from-browser"
-    );
-
-    return await ytDlp.execPromise(cleanedArgs);
-  }
-}
-
-// ----------------------
-// GET VIDEO INFO
-// ----------------------
+// Get video info
 exports.getVideoInfo = async (req, res) => {
   try {
     await ensureYtDlp();
@@ -82,14 +59,25 @@ exports.getVideoInfo = async (req, res) => {
     const args = [
       url,
       "--dump-json",
-      ...getCommonArgs(),
+      "--no-playlist",
+      "--js-runtime",
+      "node"
     ];
 
-    const data = await safeExec(args);
+    if (process.env.YOUTUBE_COOKIES) {
+      args.push("--cookies", cookiesPath);
+    }
+
+    const data = await ytDlp.execPromise(args);
     const metadata = JSON.parse(data);
 
+    console.log(
+      "Available formats:",
+      metadata.formats?.map(f => f.format_id)
+    );
+
     const formats = metadata.formats
-      ?.filter((f) => f.vcodec !== "none")
+      ?.filter(f => f.vcodec !== "none")
       ?.map((f) => ({
         formatId: f.format_id,
         ext: f.ext,
@@ -98,19 +86,22 @@ exports.getVideoInfo = async (req, res) => {
         fps: f.fps,
         filesize: f.filesize,
         hasAudio: f.acodec !== "none",
+        note: f.format_note
       }))
       ?.reduce((acc, curr) => {
-        if (!acc.find((f) => f.height === curr.height)) acc.push(curr);
+        const exists = acc.find(f => f.height === curr.height);
+        if (!exists) acc.push(curr);
         return acc;
       }, [])
       ?.sort((a, b) => (b.height || 0) - (a.height || 0));
 
-    res.json({
+    return res.status(200).json({
       title: metadata.title,
       thumbnail: metadata.thumbnail,
       duration: metadata.duration,
       uploader: metadata.uploader,
-      formats,
+      platform: metadata.extractor_key,
+      formats
     });
 
   } catch (error) {
@@ -118,14 +109,11 @@ exports.getVideoInfo = async (req, res) => {
 
     res.status(500).json({
       error: "Could not fetch video info",
-      details: error?.stderr || error.message,
+      details: error?.stderr || error.message
     });
   }
 };
 
-// ----------------------
-// DOWNLOAD VIDEO
-// ----------------------
 exports.downloadVideo = async (req, res) => {
   try {
     await ensureYtDlp();
@@ -138,12 +126,19 @@ exports.downloadVideo = async (req, res) => {
 
     format = format || "best";
 
-    const ytFormat =
-      format === "bestaudio"
-        ? "bestaudio"
-        : /^\d+$/.test(format)
-        ? `${format}+bestaudio/best`
-        : "bestvideo+bestaudio/best";
+    const isNumericFormat = /^\d+$/.test(format);
+
+    let ytFormat;
+
+    if (format === "best") {
+      ytFormat = "bestvideo+bestaudio/best";
+    } else if (format === "bestaudio") {
+      ytFormat = "bestaudio";
+    } else if (isNumericFormat) {
+      ytFormat = `${format}+bestaudio/best`;
+    } else {
+      ytFormat = "bestvideo+bestaudio/best";
+    }
 
     const ext = format === "bestaudio" ? "mp3" : "mp4";
 
@@ -152,14 +147,17 @@ exports.downloadVideo = async (req, res) => {
       `video_${Date.now()}.${ext}`
     );
 
-    // ---------------- metadata ----------------
     const metaArgs = [
       url,
       "--dump-json",
-      ...getCommonArgs(),
+      "--no-playlist"
     ];
 
-    const metaRaw = await safeExec(metaArgs);
+    if (process.env.YOUTUBE_COOKIES && fs.existsSync(cookiesPath)) {
+      metaArgs.push("--cookies", cookiesPath);
+    }
+
+    const metaRaw = await ytDlp.execPromise(metaArgs);
     const metadata = JSON.parse(metaRaw);
 
     const safeTitle = (metadata.title || "video")
@@ -168,26 +166,31 @@ exports.downloadVideo = async (req, res) => {
 
     const filename = `${safeTitle}.${ext}`;
 
-    // ---------------- download ----------------
     const args = [
       url,
       "-f",
       ytFormat,
       "-o",
       outputPath,
-      ...getCommonArgs(),
+      "--no-playlist"
     ];
+
+    if (process.env.YOUTUBE_COOKIES && fs.existsSync(cookiesPath)) {
+      args.push("--cookies", cookiesPath);
+    }
 
     if (format === "bestaudio") {
       args.push("--extract-audio", "--audio-format", "mp3");
     }
 
-    console.log("Downloading:", ytFormat);
+    console.log("Downloading with format:", ytFormat);
 
-    await safeExec(args);
+    const result = await ytDlp.execPromise(args);
+
+    console.log("yt-dlp output:", result);
 
     if (!fs.existsSync(outputPath)) {
-      throw new Error("File not created");
+      throw new Error("Download failed: file was not created");
     }
 
     res.setHeader(
@@ -201,17 +204,28 @@ exports.downloadVideo = async (req, res) => {
     );
 
     res.download(outputPath, filename, (err) => {
-      if (err) console.error("Send error:", err);
+      if (err) {
+        console.error("Error sending file:", err);
+      }
 
-      fs.unlink(outputPath, () => {});
+      // Cleanup
+      fs.unlink(outputPath, (unlinkErr) => {
+        if (unlinkErr) {
+          console.error("Error deleting temp file:", unlinkErr);
+        }
+      });
     });
 
   } catch (error) {
-    console.error("DOWNLOAD ERROR:", error?.stderr || error);
+    console.error("========= DOWNLOAD ERROR =========");
+    console.error("STDERR:", error?.stderr);
+    console.error("STDOUT:", error?.stdout);
+    console.error("MESSAGE:", error?.message);
+    console.error("FULL:", error);
 
     res.status(500).json({
-      message: "Download failed",
-      error,
+      error: "Download failed",
+      details: error?.stderr || error?.message
     });
   }
 };
@@ -223,30 +237,17 @@ exports.downloadVideo = async (req, res) => {
 
 // // paths
 // const ytDlpBinary = path.join(process.cwd(), "yt-dlp");
-// const cookiesPath = path.join(process.cwd(), "cookies.txt");
-
-// // init
 // const ytDlp = new YTDlpWrap(ytDlpBinary);
 
 // let ytReady = false;
 
-// // Ensure cookies exist
-// function ensureCookies() {
-//   if (!process.env.YOUTUBE_COOKIES) return;
-
-//   const content = process.env.YOUTUBE_COOKIES.replace(/\\n/g, "\n");
-
-//   fs.writeFileSync(cookiesPath, content, {
-//     encoding: "utf-8",
-//     flag: "w"
-//   });
-// }
-
-// // Ensure yt-dlp is ready
+// // ----------------------
+// // Ensure yt-dlp
+// // ----------------------
 // async function ensureYtDlp() {
 //   if (!ytReady) {
 //     if (!fs.existsSync(ytDlpBinary)) {
-//       console.log("Downloading yt-dlp binary...");
+//       console.log("Downloading yt-dlp...");
 //       await YTDlpWrap.downloadFromGithub(ytDlpBinary);
 //     }
 
@@ -254,15 +255,52 @@ exports.downloadVideo = async (req, res) => {
 //       console.log("Updating yt-dlp...");
 //       await ytDlp.execPromise(["-U"]);
 //     } catch (e) {
-//       console.log("yt-dlp update failed, continuing...");
+//       console.log("Update failed, continuing...");
 //     }
 
-//     ensureCookies();
 //     ytReady = true;
 //   }
 // }
 
-// // Get video info
+// // ----------------------
+// // COMMON FLAGS (SAFE FOR PRODUCTION)
+// // ----------------------
+// function getCommonArgs() {
+//   return [
+//     "--no-playlist",
+//     "--user-agent",
+//     "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
+//     "--add-header",
+//     "Accept-Language: en-US,en;q=0.9",
+//     "--sleep-interval",
+//     "2",
+//     "--max-sleep-interval",
+//     "5",
+//   ];
+// }
+
+// // ----------------------
+// // SAFE EXEC WITH RETRY (NO COOKIES LOGIC)
+// // ----------------------
+// async function safeExec(args) {
+//   try {
+//     return await ytDlp.execPromise(args);
+//   } catch (err) {
+//     console.warn("yt-dlp failed, retrying without extra flags...");
+
+//     const cleanedArgs = args.filter(
+//       (arg) =>
+//         arg !== "--cookies" &&
+//         arg !== "--cookies-from-browser"
+//     );
+
+//     return await ytDlp.execPromise(cleanedArgs);
+//   }
+// }
+
+// // ----------------------
+// // GET VIDEO INFO
+// // ----------------------
 // exports.getVideoInfo = async (req, res) => {
 //   try {
 //     await ensureYtDlp();
@@ -276,25 +314,14 @@ exports.downloadVideo = async (req, res) => {
 //     const args = [
 //       url,
 //       "--dump-json",
-//       "--no-playlist",
-//       "--js-runtime",
-//       "node"
+//       ...getCommonArgs(),
 //     ];
 
-//     if (process.env.YOUTUBE_COOKIES) {
-//       args.push("--cookies", cookiesPath);
-//     }
-
-//     const data = await ytDlp.execPromise(args);
+//     const data = await safeExec(args);
 //     const metadata = JSON.parse(data);
 
-//     console.log(
-//       "Available formats:",
-//       metadata.formats?.map(f => f.format_id)
-//     );
-
 //     const formats = metadata.formats
-//       ?.filter(f => f.vcodec !== "none")
+//       ?.filter((f) => f.vcodec !== "none")
 //       ?.map((f) => ({
 //         formatId: f.format_id,
 //         ext: f.ext,
@@ -303,22 +330,19 @@ exports.downloadVideo = async (req, res) => {
 //         fps: f.fps,
 //         filesize: f.filesize,
 //         hasAudio: f.acodec !== "none",
-//         note: f.format_note
 //       }))
 //       ?.reduce((acc, curr) => {
-//         const exists = acc.find(f => f.height === curr.height);
-//         if (!exists) acc.push(curr);
+//         if (!acc.find((f) => f.height === curr.height)) acc.push(curr);
 //         return acc;
 //       }, [])
 //       ?.sort((a, b) => (b.height || 0) - (a.height || 0));
 
-//     return res.status(200).json({
+//     res.json({
 //       title: metadata.title,
 //       thumbnail: metadata.thumbnail,
 //       duration: metadata.duration,
 //       uploader: metadata.uploader,
-//       platform: metadata.extractor_key,
-//       formats
+//       formats,
 //     });
 
 //   } catch (error) {
@@ -326,11 +350,14 @@ exports.downloadVideo = async (req, res) => {
 
 //     res.status(500).json({
 //       error: "Could not fetch video info",
-//       details: error?.stderr || error.message
+//       details: error?.stderr || error.message,
 //     });
 //   }
 // };
 
+// // ----------------------
+// // DOWNLOAD VIDEO
+// // ----------------------
 // exports.downloadVideo = async (req, res) => {
 //   try {
 //     await ensureYtDlp();
@@ -343,19 +370,12 @@ exports.downloadVideo = async (req, res) => {
 
 //     format = format || "best";
 
-//     const isNumericFormat = /^\d+$/.test(format);
-
-//     let ytFormat;
-
-//     if (format === "best") {
-//       ytFormat = "bestvideo+bestaudio/best";
-//     } else if (format === "bestaudio") {
-//       ytFormat = "bestaudio";
-//     } else if (isNumericFormat) {
-//       ytFormat = `${format}+bestaudio/best`;
-//     } else {
-//       ytFormat = "bestvideo+bestaudio/best";
-//     }
+//     const ytFormat =
+//       format === "bestaudio"
+//         ? "bestaudio"
+//         : /^\d+$/.test(format)
+//         ? `${format}+bestaudio/best`
+//         : "bestvideo+bestaudio/best";
 
 //     const ext = format === "bestaudio" ? "mp3" : "mp4";
 
@@ -364,17 +384,14 @@ exports.downloadVideo = async (req, res) => {
 //       `video_${Date.now()}.${ext}`
 //     );
 
+//     // ---------------- metadata ----------------
 //     const metaArgs = [
 //       url,
 //       "--dump-json",
-//       "--no-playlist"
+//       ...getCommonArgs(),
 //     ];
 
-//     if (process.env.YOUTUBE_COOKIES && fs.existsSync(cookiesPath)) {
-//       metaArgs.push("--cookies", cookiesPath);
-//     }
-
-//     const metaRaw = await ytDlp.execPromise(metaArgs);
+//     const metaRaw = await safeExec(metaArgs);
 //     const metadata = JSON.parse(metaRaw);
 
 //     const safeTitle = (metadata.title || "video")
@@ -383,31 +400,26 @@ exports.downloadVideo = async (req, res) => {
 
 //     const filename = `${safeTitle}.${ext}`;
 
+//     // ---------------- download ----------------
 //     const args = [
 //       url,
 //       "-f",
 //       ytFormat,
 //       "-o",
 //       outputPath,
-//       "--no-playlist"
+//       ...getCommonArgs(),
 //     ];
-
-//     if (process.env.YOUTUBE_COOKIES && fs.existsSync(cookiesPath)) {
-//       args.push("--cookies", cookiesPath);
-//     }
 
 //     if (format === "bestaudio") {
 //       args.push("--extract-audio", "--audio-format", "mp3");
 //     }
 
-//     console.log("Downloading with format:", ytFormat);
+//     console.log("Downloading:", ytFormat);
 
-//     const result = await ytDlp.execPromise(args);
-
-//     console.log("yt-dlp output:", result);
+//     await safeExec(args);
 
 //     if (!fs.existsSync(outputPath)) {
-//       throw new Error("Download failed: file was not created");
+//       throw new Error("File not created");
 //     }
 
 //     res.setHeader(
@@ -421,28 +433,17 @@ exports.downloadVideo = async (req, res) => {
 //     );
 
 //     res.download(outputPath, filename, (err) => {
-//       if (err) {
-//         console.error("Error sending file:", err);
-//       }
+//       if (err) console.error("Send error:", err);
 
-//       // Cleanup
-//       fs.unlink(outputPath, (unlinkErr) => {
-//         if (unlinkErr) {
-//           console.error("Error deleting temp file:", unlinkErr);
-//         }
-//       });
+//       fs.unlink(outputPath, () => {});
 //     });
 
 //   } catch (error) {
-//     console.error("========= DOWNLOAD ERROR =========");
-//     console.error("STDERR:", error?.stderr);
-//     console.error("STDOUT:", error?.stdout);
-//     console.error("MESSAGE:", error?.message);
-//     console.error("FULL:", error);
+//     console.error("DOWNLOAD ERROR:", error?.stderr || error);
 
 //     res.status(500).json({
-//       error: "Download failed",
-//       details: error?.stderr || error?.message
+//       message: "Download failed",
+//       error,
 //     });
 //   }
 // };
