@@ -22,10 +22,11 @@ exports.googleCallback = async (req, res) => {
       return res.redirect(`${process.env.BASE_URL}/auth-error`);
     }
 
+    // 1. Exchange code for tokens
     const { tokens } = await client.getToken(code);
-
     client.setCredentials(tokens);
 
+    // 2. VERIFY ID TOKEN PROPERLY
     const ticket = await client.verifyIdToken({
       idToken: tokens.id_token,
       audience: process.env.GOOGLE_CLIENT_ID,
@@ -33,9 +34,21 @@ exports.googleCallback = async (req, res) => {
 
     const payload = ticket.getPayload();
 
-    const { email, name, picture, email_verified } = payload;
+    if (!payload) {
+      return res.redirect(`${process.env.BASE_URL}/auth-error`);
+    }
 
-    if (!email_verified) {
+    const {
+      email,
+      name,
+      picture,
+      email_verified,
+      sub: googleId,
+    } = payload;
+
+    console.log("Payload", payload)
+
+    if (!email || email_verified !== true) {
       return res.redirect(`${process.env.BASE_URL}/auth-error`);
     }
 
@@ -45,29 +58,48 @@ exports.googleCallback = async (req, res) => {
 
     if (!user) {
       user = await prisma.user.create({
-        data: { email, name, picture },
+        data: {
+          email,
+          name,
+          picture,
+        },
       });
     }
 
     const appToken = jwt.sign(
-      { id: user.id, email: user.email },
+      {
+        id: user.id,
+        email: user.email,
+        googleId,
+      },
       process.env.JWT_SECRET,
       { expiresIn: "7d" }
     );
 
-    res.redirect(
+    return res.redirect(
       `${process.env.BASE_URL}/success?token=${appToken}`
     );
   } catch (error) {
-    console.error(error);
-    res.redirect(`${process.env.BASE_URL}/auth-error`);
+    console.error("Google OAuth error:", error);
+    return res.redirect(`${process.env.BASE_URL}/auth-error`);
   }
 };
 
 exports.getAllUsers = async (req, res) => {
-    try {
-        const users = prisma.user.get()
-    } catch (error) {
-        
-    }
-}
+  try {
+    const users = await prisma.user.findMany();
+
+    return res.status(200).json({
+      success: true,
+      users,
+    });
+
+  } catch (error) {
+    console.error("Get users error:", error);
+
+    return res.status(500).json({
+      success: false,
+      error: "Failed to fetch users",
+    });
+  }
+};
