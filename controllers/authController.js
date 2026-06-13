@@ -1,8 +1,6 @@
 const client = require("../config/googleClient");
 const jwt = require("jsonwebtoken");
-const { PrismaClient } = require("@prisma/client");
-
-const prisma = new PrismaClient();
+const prisma = require("../models/prismaClient");
 
 exports.googleRedirect = (req, res) => {
   const url = client.generateAuthUrl({
@@ -42,13 +40,13 @@ exports.googleCallback = async (req, res) => {
       email,
       name,
       picture,
-    //   email_verified,
+      email_verified,
       sub: googleId,
     } = payload;
 
     console.log("Payload", payload)
 
-    if (!email) {
+    if (!email || email_verified !== true) {
       return res.redirect(`${process.env.BASE_URL}/auth-error`);
     }
 
