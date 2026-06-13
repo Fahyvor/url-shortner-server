@@ -13,3 +13,12 @@ model Url {
   shortCode   String   @unique
   createdAt   DateTime @default(now())
 }
+
+model User {
+  id        String   @id @default(cuid())
+  email     String   @unique
+  name      String?
+  picture   String?
+  provider  String   @default("google")
+  createdAt DateTime @default(now())
+}

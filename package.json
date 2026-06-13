@@ -17,6 +17,8 @@
     "@prisma/client": "^6.19.2",
     "cors": "^2.8.6",
     "express": "^5.2.1",
+    "google-auth-library": "^10.7.0",
+    "jsonwebtoken": "^9.0.3",
     "nanoid": "^5.1.6",
     "prisma": "^6.19.2",
     "yt-dlp-wrap": "^2.3.12"

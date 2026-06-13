@@ -1,6 +1,7 @@
 const express = require("express");
 const urlRoutes = require("./routes/urlRoutes");
 const videoRoutes = require("./routes/videoRoutes");
+const authRoutes = require("./routes/authRoutes")
 const cors = require("cors");
 
 const app = express();
@@ -11,6 +12,7 @@ app.use(express.json());
 
 app.use("/url", urlRoutes);
 app.use("/video", videoRoutes);
+app.use("/auth", authRoutes)
 
 const PORT = 9000;
 
