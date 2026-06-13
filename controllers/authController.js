@@ -42,13 +42,13 @@ exports.googleCallback = async (req, res) => {
       email,
       name,
       picture,
-      email_verified,
+    //   email_verified,
       sub: googleId,
     } = payload;
 
     console.log("Payload", payload)
 
-    if (!email || email_verified !== true) {
+    if (!email) {
       return res.redirect(`${process.env.BASE_URL}/auth-error`);
     }
 
