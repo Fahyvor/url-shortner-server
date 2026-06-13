@@ -6,7 +6,7 @@
     "test": "echo \"Error: no test specified\" && exit 1",
     "start": "ffmpeg -version || true && node server.js",
     "dev": "nodemon server.js",
-    "build": "apt-get update && apt-get install -y ffmpeg",
+    "build": "apt-get update && apt-get install -y ffmpeg && prisma generate",
     "postinstall": "curl -L https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp -o yt-dlp && chmod +x yt-dlp"
   },
   "keywords": [],
