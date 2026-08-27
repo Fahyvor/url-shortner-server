@@ -351,7 +351,7 @@ exports.downloadVideo = async (req, res) => {
 //   } catch (err) {
 //     console.warn("Primary attempt failed");
 
-//     // 🔥 YouTube fallback with cookies
+//     // YouTube fallback with cookies
 //     if (
 //       platform === "youtube" &&
 //       process.env.YOUTUBE_COOKIES &&
@@ -366,7 +366,7 @@ exports.downloadVideo = async (req, res) => {
 //       ]);
 //     }
 
-//     // 🔥 fallback lightweight format
+//     // fallback lightweight format
 //     console.log("Retrying with lighter format...");
 
 //     return await ytDlp.execPromise([
