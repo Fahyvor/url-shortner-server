@@ -4,8 +4,117 @@ const fs = require("fs");
 const os = require("os");
 const { execSync } = require("child_process");
 
-const ytDlpBinary = "yt-dlp";
+// ----------------------
+// ENVIRONMENT & BINARY RESOLUTION
+// ----------------------
+function setupEnvironmentPath() {
+  const homeDir = os.homedir();
+  const commonDirs = [
+    process.cwd(),
+    path.join(homeDir, ".local", "bin"),
+    "/home/render/.local/bin",
+    "/opt/render/.local/bin",
+    "/root/.local/bin",
+    "/usr/local/bin",
+    "/usr/bin",
+    "/bin",
+    "/Library/Frameworks/Python.framework/Versions/3.14/bin",
+    "/Library/Frameworks/Python.framework/Versions/Current/bin",
+    "/opt/homebrew/bin",
+    "/opt/homebrew/sbin",
+    path.join(homeDir, "Library", "Python", "3.14", "bin"),
+  ];
+
+  try {
+    const pyScripts = execSync("python3 -c \"import sysconfig; print(sysconfig.get_path('scripts'))\"", {
+      encoding: "utf8",
+      stdio: ["pipe", "pipe", "ignore"],
+      timeout: 5000,
+    }).trim();
+    if (pyScripts && fs.existsSync(pyScripts)) {
+      commonDirs.unshift(pyScripts);
+    }
+  } catch {}
+
+  try {
+    const pyUserBase = execSync("python3 -c \"import site; print(site.getuserbase() + '/bin')\"", {
+      encoding: "utf8",
+      stdio: ["pipe", "pipe", "ignore"],
+      timeout: 5000,
+    }).trim();
+    if (pyUserBase && fs.existsSync(pyUserBase)) {
+      commonDirs.unshift(pyUserBase);
+    }
+  } catch {}
+
+  const currentPath = process.env.PATH || "";
+  const existingDirs = currentPath.split(":");
+  const toAdd = commonDirs.filter((d) => d && fs.existsSync(d) && !existingDirs.includes(d));
+
+  if (toAdd.length > 0) {
+    process.env.PATH = [...toAdd, currentPath].join(":");
+  }
+}
+setupEnvironmentPath();
+
+function resolveYtDlpBinary() {
+  // 1. Explicit override via env variable
+  if (process.env.YT_DLP_PATH && fs.existsSync(process.env.YT_DLP_PATH)) {
+    return process.env.YT_DLP_PATH;
+  }
+
+  // 2. Query Python shutil.which
+  try {
+    const pyWhich = execSync("python3 -c \"import shutil; print(shutil.which('yt-dlp') or '')\"", {
+      encoding: "utf8",
+      stdio: ["pipe", "pipe", "ignore"],
+      timeout: 5000,
+    }).trim();
+    if (pyWhich && fs.existsSync(pyWhich)) return pyWhich;
+  } catch {}
+
+  // 3. Query system `which yt-dlp`
+  try {
+    const whichOut = execSync("which yt-dlp", {
+      encoding: "utf8",
+      stdio: ["pipe", "pipe", "ignore"],
+      timeout: 5000,
+    }).trim();
+    if (whichOut && fs.existsSync(whichOut)) return whichOut;
+  } catch {}
+
+  // 4. Check known explicit paths (local cwd first, then Linux/Render user directories, then system)
+  const homeDir = os.homedir();
+  const candidatePaths = [
+    path.join(process.cwd(), "yt-dlp"),
+    path.join(homeDir, ".local", "bin", "yt-dlp"),
+    "/home/render/.local/bin/yt-dlp",
+    "/opt/render/.local/bin/yt-dlp",
+    "/root/.local/bin/yt-dlp",
+    "/usr/local/bin/yt-dlp",
+    "/usr/bin/yt-dlp",
+    "/opt/homebrew/bin/yt-dlp",
+    "/Library/Frameworks/Python.framework/Versions/Current/bin/yt-dlp",
+    "/Library/Frameworks/Python.framework/Versions/3.14/bin/yt-dlp",
+  ];
+
+  for (const candidate of candidatePaths) {
+    if (fs.existsSync(candidate)) {
+      try {
+        fs.chmodSync(candidate, "755");
+      } catch {}
+      try {
+        fs.accessSync(candidate, fs.constants.X_OK);
+        return candidate;
+      } catch {}
+    }
+  }
+
+  return "yt-dlp";
+}
+
 const cookiesPath = path.join(process.cwd(), "cookies.txt");
+let ytDlpBinary = resolveYtDlpBinary();
 const ytDlp = new YTDlpWrap(ytDlpBinary);
 
 let ytReady = false;
@@ -16,6 +125,7 @@ const UPDATE_INTERVAL_MS = 1000 * 60 * 60 * 6;
 // INIT
 // ----------------------
 async function ensureYtDlp() {
+  setupEnvironmentPath();
   const now = Date.now();
   const shouldUpdate = !ytReady || now - lastUpdated > UPDATE_INTERVAL_MS;
 
@@ -30,6 +140,36 @@ async function ensureYtDlp() {
       console.log("[yt-dlp] Upgrade done.");
     } catch (e) {
       console.warn("[yt-dlp] pip upgrade skipped:", e.message?.substring(0, 80));
+    }
+
+    setupEnvironmentPath();
+    const resolved = resolveYtDlpBinary();
+    ytDlp.setBinaryPath(resolved);
+    console.log("[yt-dlp] Using binary at:", resolved);
+
+    // Verify binary is working
+    let isWorking = false;
+    try {
+      const ver = await ytDlp.getVersion();
+      console.log("[yt-dlp] Version verified:", ver);
+      isWorking = true;
+    } catch (err) {
+      console.warn("[yt-dlp] Binary verification failed:", err.message);
+    }
+
+    // Fallback: If not working, download standalone binary
+    if (!isWorking) {
+      const localBinary = path.join(process.cwd(), "yt-dlp");
+      try {
+        console.log("[yt-dlp] Attempting download from GitHub releases to:", localBinary);
+        await YTDlpWrap.downloadFromGithub(localBinary);
+        fs.chmodSync(localBinary, "755");
+        ytDlp.setBinaryPath(localBinary);
+        const ver = await ytDlp.getVersion();
+        console.log("[yt-dlp] Downloaded version verified:", ver);
+      } catch (dlErr) {
+        console.error("[yt-dlp] GitHub download fallback failed:", dlErr.message);
+      }
     }
 
     writeCookies();
